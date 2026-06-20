@@ -1,4 +1,4 @@
-# Nayapankh Foundation — AI Agent Prototype
+# NGO-OPS-AGENT — AI Agent Prototype
 **AI Agent Internship Deliverable**
 
 A working multi-agent assistant for NGO operations: donor management,
