@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Entry point for the Nayapankh Foundation AI Agent prototype.
+Entry point for the NayePankh Foundation AI Agent prototype.
 
 Usage:
     python3 main.py            # runs a scripted demo (great for screenshots / report)
@@ -42,13 +42,14 @@ DEMO_SCRIPT = [
     "I want to volunteer, my name is Karan Mehta, skills are teaching, logistics",
     "Plan an outdoor event on 2026-07-15",
     "Remind the team to print donation receipts",
+    "Do you offer tax exemption certificates for donations above 50000?",
     "Give me a summary report",
 ]
 
 
 def run_demo(memory):
     coordinator = CoordinatorAgent(memory)
-    print("\n=========== NAYAPANKH FOUNDATION AI AGENT -- SCRIPTED DEMO ===========")
+    print("\n=========== NAYEPANKH FOUNDATION AI AGENT -- SCRIPTED DEMO ===========")
     print(f"(memory file: {DB_PATH})\n")
     for line in DEMO_SCRIPT:
         print(f"\nUser: {line}")
@@ -60,9 +61,9 @@ def run_demo(memory):
 
 def run_chat(memory):
     coordinator = CoordinatorAgent(memory)
-    print("\n=========== NAYAPANKH FOUNDATION AI AGENT -- INTERACTIVE MODE ===========")
+    print("\n=========== NAYEPANKH FOUNDATION AI AGENT -- INTERACTIVE MODE ===========")
     print("Type a message (or 'history' to see recent conversation, 'quit' to exit).")
-    print("Quick lookups: 'donors', 'volunteers', 'tasks', 'events'")
+    print("Quick lookups: 'donors', 'volunteers', 'tasks', 'events', 'unanswered'")
     print("Try things like:")
     print("  - Record a donation of 3000 from Anita Sharma")
     print("  - I want to volunteer, my name is Dev Patel, skills are fundraising")
@@ -97,11 +98,20 @@ def run_chat(memory):
         if text.lower() in ("list events", "events"):
             coordinator.event_agent.list_events()
             continue
+        if text.lower() in ("list unanswered", "unanswered"):
+            rows = memory.list_unanswered_questions()
+            if not rows:
+                print("[Coordinator] No unanswered questions logged -- FAQ coverage looks good!")
+            else:
+                print("[Coordinator] Unanswered questions awaiting review:")
+                for r in rows:
+                    print(f"  - #{r['id']} \"{r['question']}\" (asked {r['timestamp']})")
+            continue
         coordinator.route(text)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nayapankh Foundation AI Agent prototype")
+    parser = argparse.ArgumentParser(description="NayePankh Foundation AI Agent prototype")
     parser.add_argument("--chat", action="store_true", help="interactive chat mode")
     parser.add_argument("--reset", action="store_true", help="wipe memory and start fresh")
     args = parser.parse_args()

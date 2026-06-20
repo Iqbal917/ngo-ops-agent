@@ -1,7 +1,7 @@
 """
 data.py
 -------
-Seed/sample data for the Nayapankh Foundation AI Agent prototype.
+Seed/sample data for the NayePankh Foundation AI Agent prototype.
 
 In a real deployment, this would be replaced by data pulled from the
 Foundation's actual CRM / spreadsheet / database. For this prototype,
@@ -35,9 +35,9 @@ SEED_VOLUNTEERS = [
 # question exactly.
 FAQ_KNOWLEDGE_BASE = [
     {
-        "question": "What does Nayapankh Foundation do",
+        "question": "What does NayePankh Foundation do",
         "answer": (
-            "Nayapankh Foundation works on community welfare programs including "
+            "NayePankh Foundation works on community welfare programs including "
             "education support, volunteer-driven outreach, and donation-funded "
             "relief activities. (Edit this answer in data.py with the real mission "
             "statement.)"

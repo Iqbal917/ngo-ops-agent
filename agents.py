@@ -31,6 +31,31 @@ from apis import get_weather_forecast, is_public_holiday
 from data import FAQ_KNOWLEDGE_BASE, FOUNDATION_LOCATION
 
 
+def parse_flexible_date(text):
+    """
+    Finds a date-like token in free text and normalizes it to 'YYYY-MM-DD'.
+    Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, and 2-digit-year variants
+    like DD-MM-YY (e.g. '26-06-26' -> '2026-06-26'), using the day-month-year
+    convention common in India. Returns None if no valid date is found.
+    """
+    match = re.search(r"\b(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})\b", text)
+    if not match:
+        return None
+    a, b, c = match.groups()
+    try:
+        if len(a) == 4:
+            dt = datetime(int(a), int(b), int(c))  # YYYY-MM-DD
+        elif len(c) == 4:
+            dt = datetime(int(c), int(b), int(a))  # DD-MM-YYYY
+        else:
+            year = int(c)
+            year += 2000 if year < 100 else 0
+            dt = datetime(year, int(b), int(a))  # DD-MM-YY
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 class BaseAgent:
     name = "BaseAgent"
 
@@ -50,6 +75,7 @@ class DonorAgent(BaseAgent):
         amount_match = re.search(r"(\d{2,7})", text.replace(",", ""))
         name_match = re.search(r"from\s+([A-Za-z .]+)", text, re.IGNORECASE)
         if not amount_match or not name_match:
+            self.memory.session_context["pending"] = {"agent": "donor", "text": text}
             return self.say(
                 "I can log a donation if you tell me the amount and donor name, "
                 "e.g. 'Record a donation of 2000 from Ravi Kumar'."
@@ -69,8 +95,8 @@ class DonorAgent(BaseAgent):
         # LLM UPGRADE POINT: replace this template with a generated message
         return (
             f"Dear {name}, thank you for your generous contribution of \u20b9{amount:.0f} "
-            f"to Nayapankh Foundation. Your continued support (\u20b9{total:.0f} lifetime) "
-            f"helps us reach more communities. With gratitude, Team Nayapankh."
+            f"to NayePankh Foundation. Your continued support (\u20b9{total:.0f} lifetime) "
+            f"helps us reach more communities. With gratitude, Team NayePankh."
         )
 
     def list_donors(self):
@@ -88,6 +114,7 @@ class VolunteerAgent(BaseAgent):
         name_match = re.search(r"name is\s+([A-Za-z .]+?)(?:,|\.|$)", text, re.IGNORECASE)
         skills_match = re.search(r"skills?\s*(?:is|are|:)\s*([A-Za-z, ]+)", text, re.IGNORECASE)
         if not name_match:
+            self.memory.session_context["pending"] = {"agent": "volunteer", "text": text}
             return self.say(
                 "To register you as a volunteer, tell me your name (and optionally skills), "
                 "e.g. 'I want to volunteer, my name is Priya Singh, skills are teaching'."
@@ -142,14 +169,14 @@ class EventAgent(BaseAgent):
         self.task_agent = task_agent  # demonstrates agent-to-agent collaboration
 
     def handle(self, text):
-        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+        date_str = parse_flexible_date(text)
         name_match = re.search(r"event(?:\s+called)?\s+\"?([A-Za-z0-9 ]+?)\"?\s+on", text, re.IGNORECASE)
-        if not date_match:
+        if not date_str:
+            self.memory.session_context["pending"] = {"agent": "event", "text": text}
             return self.say(
-                "Tell me the date (YYYY-MM-DD) to plan an event, e.g. "
-                "'Plan an outdoor event on 2026-07-01'."
+                "Tell me the date to plan an event -- formats like 2026-07-01, "
+                "01-07-2026, or 26-06-26 all work."
             )
-        date_str = date_match.group(1)
         event_name = name_match.group(1).strip() if name_match else "Community Outreach Event"
 
         # --- real API #1: weather ---
@@ -196,14 +223,19 @@ class FAQAgent(BaseAgent):
     def handle(self, text):
         # LLM UPGRADE POINT: replace fuzzy matching with a real generated answer
         questions = [f["question"] for f in FAQ_KNOWLEDGE_BASE]
-        best = difflib.get_close_matches(text, questions, n=1, cutoff=0.3)
+        best = difflib.get_close_matches(text, questions, n=1, cutoff=0.55)
         if best:
             for f in FAQ_KNOWLEDGE_BASE:
                 if f["question"] == best[0]:
                     return self.say(f["answer"])
+        # No good match: log it instead of silently dropping it, so Foundation
+        # staff can review real questions people asked and grow the FAQ over
+        # time (see memory.list_unanswered_questions()).
+        self.memory.log_unanswered_question(text)
         return self.say(
-            "I don't have a canned answer for that yet. Try asking about volunteering, "
-            "donating, planning events, or what this assistant can do."
+            "I don't have a canned answer for that yet, but I've logged your question "
+            "so the team can follow up and grow the FAQ. Meanwhile, try asking about "
+            "volunteering, donating, planning events, or what this assistant can do."
         )
 
 
@@ -232,16 +264,64 @@ class CoordinatorAgent(BaseAgent):
         self.volunteer_agent = VolunteerAgent(memory)
         self.event_agent = EventAgent(memory, self.task_agent)
         self.faq_agent = FAQAgent(memory)
+        self._agent_registry = {
+            "donor": self.donor_agent,
+            "volunteer": self.volunteer_agent,
+            "event": self.event_agent,
+            "task": self.task_agent,
+            "faq": self.faq_agent,
+        }
+
+    def _looks_like_question(self, text):
+        t = text.strip().lower()
+        first_word = t.split()[0] if t.split() else ""
+        question_starters = {
+            "do", "does", "did", "can", "could", "is", "are", "was", "were",
+            "should", "would", "will", "what", "how", "why", "who", "which",
+        }
+        return t.endswith("?") or first_word in question_starters
 
     def _classify(self, text):
         text_l = f" {text.lower()} "
+        is_question = self._looks_like_question(text)
         for intent, keywords in self.INTENT_CASCADE:
+            # "donor" and "report" keywords (e.g. "donation", "status") are
+            # topic words that show up in genuine questions too -- e.g. "Do
+            # you offer tax exemption for donations above 50000?" should hit
+            # the FAQ agent, not be misread as a command to record a
+            # donation. Action-oriented intents (task/volunteer/event) are
+            # rarely phrased as questions in this domain, so they're left
+            # unaffected.
+            if is_question and intent in ("donor", "report"):
+                continue
             if any(kw in text_l for kw in keywords):
                 return intent
         return "faq"  # default: try to answer it as a question
 
     def route(self, user_text):
         self.memory.log_conversation(role="user", agent="User", message=user_text)
+
+        # --- multi-turn follow-up handling ---
+        # If the previous turn was an agent asking for missing info (e.g. "what
+        # date?"), don't re-classify this reply from scratch -- that's what
+        # caused short replies like "26-06-26" to fall through to the FAQ
+        # agent. Instead, merge it with the original request and retry the
+        # SAME agent -- but only if this new message doesn't itself look like
+        # a distinct, fresh command (e.g. "Give me a summary report" arriving
+        # while a donor follow-up was pending). That guard prevents a stale
+        # pending state from swallowing an unrelated request.
+        pending = self.memory.session_context.get("pending")
+        if pending:
+            fresh_intent = self._classify(user_text)
+            if fresh_intent in ("faq", pending["agent"]):
+                agent = self._agent_registry.get(pending["agent"])
+                combined_text = f"{pending['text']} {user_text}".strip()
+                self.memory.session_context["pending"] = None
+                if agent:
+                    return agent.handle(combined_text)
+            else:
+                self.memory.session_context["pending"] = None  # stale -- drop it, route fresh below
+
         intent = self._classify(user_text)
 
         if intent == "donor":
@@ -263,11 +343,13 @@ class CoordinatorAgent(BaseAgent):
         volunteers = self.memory.list_volunteers()
         tasks = self.memory.list_tasks(status="open")
         events = self.memory.list_events()
+        unanswered = self.memory.list_unanswered_questions()
         lines = [
-            "=== Nayapankh Foundation -- Automated Daily Summary ===",
+            "=== NayePankh Foundation -- Automated Daily Summary ===",
             f"Donors on file: {len(donors)} (total raised: \u20b9{sum(d['total_donated'] for d in donors):.0f})",
             f"Registered volunteers: {len(volunteers)} ({sum(v['available'] for v in volunteers)} currently available)",
             f"Open tasks: {len(tasks)}",
             f"Planned events: {len(events)}",
+            f"Unanswered questions awaiting review: {len(unanswered)}",
         ]
         return self.say("\n".join(lines))

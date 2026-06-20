@@ -5,17 +5,18 @@ Persistent + working memory for the agent system.
 
 WHY THIS COUNTS AS "MEMORY" (for the internship write-up):
 
-1. Long-term memory: a SQLite database file (nayapankh_memory.db) stores
-   donors, volunteers, tasks, events, and the full conversation log. This
-   persists across separate runs of the program -- close the script, reopen
-   it tomorrow, and the agents still remember everything.
+1. Long-term memory: a SQLite database file (ngo_ops_memory.db) stores
+   donors, volunteers, tasks, events, the full conversation log, and a
+   running list of questions the FAQ agent couldn't answer. This persists
+   across separate runs of the program -- close the script, reopen it
+   tomorrow, and the agents still remember everything.
 
 2. Working/short-term memory: the `session_context` dict passed around
    during a single run holds the recent conversation turns so agents can
    resolve references like "him" or "that event" within one session.
 
 Using SQLite (Python's built-in `sqlite3`) keeps the prototype dependency-free
-and easy to inspect/grade -- you can open nayapankh_memory.db with any SQLite
+and easy to inspect/grade -- you can open ngo_ops_memory.db with any SQLite
 browser to see exactly what the agents have learned over time.
 """
 
@@ -23,7 +24,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "nayapankh_memory.db"
+DB_PATH = Path(__file__).parent / "ngo_ops_memory.db"
 
 
 class Memory:
@@ -33,7 +34,7 @@ class Memory:
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
         # short-term / working memory for the current process only
-        self.session_context = {"recent_turns": []}
+        self.session_context = {"recent_turns": [], "pending": None}
 
     def _init_schema(self):
         cur = self.conn.cursor()
@@ -79,6 +80,13 @@ class Memory:
                 role TEXT,
                 agent TEXT,
                 message TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS unanswered_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                timestamp TEXT,
+                reviewed INTEGER DEFAULT 0
             );
             """
         )
@@ -186,6 +194,28 @@ class Memory:
 
     def list_events(self):
         return [dict(r) for r in self.conn.execute("SELECT * FROM events ORDER BY date")]
+
+    # ---------- unanswered questions (FAQ gap tracking) ----------
+    def log_unanswered_question(self, question):
+        """Called by FAQAgent whenever it has no good match -- turns dead-end
+        questions into a reviewable backlog instead of silently dropping them."""
+        ts = datetime.now().isoformat(timespec="seconds")
+        self.conn.execute(
+            "INSERT INTO unanswered_questions (question, timestamp, reviewed) VALUES (?, ?, 0)",
+            (question, ts),
+        )
+        self.conn.commit()
+
+    def list_unanswered_questions(self, only_unreviewed=True):
+        q = "SELECT * FROM unanswered_questions"
+        if only_unreviewed:
+            q += " WHERE reviewed = 0"
+        q += " ORDER BY id DESC"
+        return [dict(r) for r in self.conn.execute(q)]
+
+    def mark_question_reviewed(self, question_id):
+        self.conn.execute("UPDATE unanswered_questions SET reviewed = 1 WHERE id = ?", (question_id,))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()
